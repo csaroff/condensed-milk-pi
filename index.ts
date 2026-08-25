@@ -337,18 +337,7 @@ export default function tokenCompressor(pi: ExtensionAPI) {
     totalCompressed = 0;
     compressedCount = 0;
     totalCommands = 0;
-    contextSaved = 0;
-    contextMaskEvents = 0;
-    contextMasksTotal = 0;
-    persistentCutoff = 0;
-    zoneEntered = -1;
-    maskedReadPaths.clear();
-    maskedBashCommands.clear();
-    everMaskedReads.clear();
-    everMaskedBashes.clear();
-    reReadByRead = 0;
-    reReadByBash = 0;
-    reReadTurnsDeltaSum = 0;
+    resetPositionBasedMaskingState();
     cacheHistory = [];
     totalCacheRead = 0;
     totalCacheWrite = 0;
@@ -394,34 +383,15 @@ export default function tokenCompressor(pi: ExtensionAPI) {
     }
   });
 
-  // v1.8.1 (ADR-028): /pi-vcc compaction collapses the messages array while
-  // the masker's persistentCutoff is frozen at a pre-compact absolute index.
-  // Without this reset, every post-compact tool_result sits below the stale
-  // cutoff and gets masked (symptom: `cat file.md`, Read tool, etc. all return
-  // `[cm-masked bash] <cmd>` / `[cm-masked read] <path>` for fresh content;
-  // v1.9.0 (ADR-029) renamed the prefix from `[masked …]` to `[cm-masked …]`).
-  // Reset all position-based state and re-enter zones naturally on next
-  // context event that crosses a threshold.
+  // Compaction and tree navigation can both replace a long active context
+  // with a much shorter one. Their message positions no longer share the
+  // coordinate system used by the frozen cutoff, so restart positional state
+  // and let pressure zones re-enter naturally on the next context event.
   pi.on("session_compact", async (_event, _ctx) => {
-    persistentCutoff = 0;
-    zoneEntered = -1;
-    // Clear mask trackers: placeholders in compact summary aren't tracked by
-    // us, and re-read telemetry should restart clean since the
-    // "original placeholder turn" recorded in these maps no longer
-    // corresponds to a real message index post-compact.
-    maskedReadPaths.clear();
-    maskedBashCommands.clear();
-    everMaskedReads.clear();
-    everMaskedBashes.clear();
-    reReadByRead = 0;
-    reReadByBash = 0;
-    reReadTurnsDeltaSum = 0;
-    // Context mask counters reset so /compress-stats reflects post-compact
-    // state rather than showing a carryover cutoff index that no longer
-    // corresponds to any message in the array.
-    contextSaved = 0;
-    contextMaskEvents = 0;
-    contextMasksTotal = 0;
+    resetPositionBasedMaskingState();
+  });
+  pi.on("session_tree", async (_event, _ctx) => {
+    resetPositionBasedMaskingState();
   });
 
   // v1.8.0: on shutdown, if opt-in, append one JSONL line. Never writes without
@@ -577,6 +547,23 @@ export default function tokenCompressor(pi: ExtensionAPI) {
   let reReadByBash = 0;
   let reReadTurnsDeltaSum = 0;  // sum of (currentTurn - firstMaskedTurn)
 
+  function resetPositionBasedMaskingState(): void {
+    persistentCutoff = 0;
+    zoneEntered = -1;
+    // Placeholder locations and their first-mask turns are only meaningful in
+    // the message array where they were recorded.
+    maskedReadPaths.clear();
+    maskedBashCommands.clear();
+    everMaskedReads.clear();
+    everMaskedBashes.clear();
+    reReadByRead = 0;
+    reReadByBash = 0;
+    reReadTurnsDeltaSum = 0;
+    contextSaved = 0;
+    contextMaskEvents = 0;
+    contextMasksTotal = 0;
+  }
+
   pi.on("context", async (event, ctx) => {
     turnCounter++;
 
@@ -630,9 +617,12 @@ export default function tokenCompressor(pi: ExtensionAPI) {
       previousCutoff: persistentCutoff,
       zoneEntered,
     });
+    // Persist every decision, including a defense-in-depth clamp after an
+    // unexpected branch shrink. Otherwise the stale absolute cutoff would
+    // expand again over newly appended messages on the next context event.
+    persistentCutoff = decision.cutoffIdx;
     if (decision.zoneAdvanced) {
       zoneEntered = decision.activeZone;
-      persistentCutoff = decision.cutoffIdx;
       // v1.8.0: record zone entry for telemetry.
       zonesEnteredLog.push({
         zone: decision.activeZone,
@@ -675,7 +665,7 @@ export default function tokenCompressor(pi: ExtensionAPI) {
         }
         if (!maskedBashCommands.has(c)) maskedBashCommands.set(c, turnCounter);
       }
-      // persistentCutoff already updated on zone transition; nothing to do here
+      // persistentCutoff already updated from this context's cutoff decision.
     }
 
     // Record this turn

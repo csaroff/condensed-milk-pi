@@ -2,6 +2,17 @@
 
 All notable changes to condensed-milk.
 
+## Unreleased
+
+### Fixed — fresh tool results masked after tree navigation
+
+Navigating from a long branch to a shorter point with `/tree` now resets the
+same position-based masking state as compaction. Defensive cutoff clamps are
+also persisted on every context event, preventing a stale absolute cutoff from
+expanding over fresh results as a shortened branch grows.
+
+Regression coverage: `test-tree-reset.mjs`.
+
 ## [1.10.0] - 2026-04-30
 
 ### Added — backend profiles (Phase 1 of vLLM/Qwen support)

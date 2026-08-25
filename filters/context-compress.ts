@@ -306,12 +306,13 @@ const FALLBACK_PLACEHOLDERS: PlaceholderTemplates = {
 const MASKED_THINKING_PLACEHOLDER = "";
 
 export interface CutoffDecision {
-  /** Cutoff to use for this call. */
+  /** Cutoff to use for this call. Persist every decision so a defensive
+   *  clamp remains bounded if the message array unexpectedly shrinks. */
   cutoffIdx: number;
   /** Zone currently active (-1 if below all thresholds). */
   activeZone: number;
   /** True if this call caused a zone transition (caller should persist
-   *  the new zone + cutoff). */
+   *  the new zone). */
   zoneAdvanced: boolean;
 }
 
@@ -348,6 +349,8 @@ export function decideCutoff(
   // cutoff and all tool_results get masked. With it, at worst a compact
   // event that we missed degrades to "mask everything prior to the compact
   // boundary" which is still a correct bound since nothing prior exists.
+  // Callers persist this clamped value so it cannot expand over fresh results
+  // as the shorter branch grows.
   const clampedPreviousCutoff = Math.min(previousCutoff, messagesLength);
 
   // True-static: only compute a new cutoff if we've entered a higher
