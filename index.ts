@@ -15,24 +15,35 @@ import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { dispatch, registeredCommands, registerContentFallback } from "./filters/dispatch.js";
 
-// Import filter modules — each self-registers via registerFilter()
-import "./filters/pytest.js";
-import "./filters/git-status.js";
-import "./filters/git-diff.js";
-import "./filters/git-mutations.js";
-import "./filters/git-log.js";
-import "./filters/file-ops.js";
-import "./filters/tree.js";
-import "./filters/env.js";
-import "./filters/python-traceback.js";
-import "./filters/log-dedup.js";
-import "./filters/tsc.js";
-import "./filters/linter.js";
-import "./filters/grep-grouping.js";
-import "./filters/build.js";
-import "./filters/test-runners.js";
-import "./filters/install.js";
-import { filterJsonOutput } from "./filters/json-schema.js";
+let filtersLoad: Promise<void> | undefined;
+
+function ensureFiltersLoaded(): Promise<void> {
+  if (!filtersLoad) {
+    filtersLoad = Promise.all([
+      import("./filters/pytest.js"),
+      import("./filters/git-status.js"),
+      import("./filters/git-diff.js"),
+      import("./filters/git-mutations.js"),
+      import("./filters/git-log.js"),
+      import("./filters/file-ops.js"),
+      import("./filters/tree.js"),
+      import("./filters/env.js"),
+      import("./filters/python-traceback.js"),
+      import("./filters/log-dedup.js"),
+      import("./filters/tsc.js"),
+      import("./filters/linter.js"),
+      import("./filters/grep-grouping.js"),
+      import("./filters/build.js"),
+      import("./filters/test-runners.js"),
+      import("./filters/install.js"),
+      import("./filters/json-schema.js"),
+    ]).then((modules) => {
+      const jsonSchema = modules[modules.length - 1] as typeof import("./filters/json-schema.js");
+      registerContentFallback("json", jsonSchema.filterJsonOutput);
+    });
+  }
+  return filtersLoad;
+}
 import {
   compressStaleToolResults,
   decideCutoff,
@@ -291,9 +302,6 @@ interface TurnCacheData {
 }
 
 export default function tokenCompressor(pi: ExtensionAPI) {
-  // Register content-based fallback filters
-  registerContentFallback("json", filterJsonOutput);
-
   // v1.9.0 (ADR-029): append CM_EXPLAINER to every turn's system prompt.
   // Chained by pi across extensions (per BeforeAgentStartEventResult docs)
   // — safe to compose with other extensions contributing systemPrompt.
@@ -333,6 +341,7 @@ export default function tokenCompressor(pi: ExtensionAPI) {
   let turnCounter = 0;
 
   pi.on("session_start", async (event, ctx) => {
+    const filterWarmup = ensureFiltersLoaded();
     totalOriginal = 0;
     totalCompressed = 0;
     compressedCount = 0;
@@ -377,10 +386,15 @@ export default function tokenCompressor(pi: ExtensionAPI) {
       coverage: [...activeProfile.coverage],
       showStatus: config.showStatus,
     };
-    const cmds = registeredCommands();
-    if (config.showStatus) {
-      ctx.ui?.setStatus?.("token-savings", `↓0 (${cmds.length}f)`);
-    }
+    void filterWarmup
+      .then(() => {
+        if (config.showStatus) {
+          ctx.ui?.setStatus?.("token-savings", `↓0 (${registeredCommands().length}f)`);
+        }
+      })
+      .catch((error) => {
+        process.stderr.write(`condensed-milk: failed to load filters: ${error instanceof Error ? error.message : String(error)}\n`);
+      });
   });
 
   // Compaction and tree navigation can both replace a long active context
@@ -473,6 +487,8 @@ export default function tokenCompressor(pi: ExtensionAPI) {
 
     const command = (event.input as { command?: string })?.command;
     if (!command) return;
+
+    await ensureFiltersLoaded();
 
     // v1.4.0: re-read detection for bash. Uses FIRST-mask turn.
     if (maskedBashCommands.has(command)) {
