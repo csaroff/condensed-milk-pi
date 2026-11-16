@@ -280,12 +280,10 @@ const USER_RULES: ResolvedRules = resolveRules(loadUserRulesConfig());
 // v1.9.0 (ADR-029): constant system-prompt addendum that teaches a
 // self-sufficient looping agent what `[cm-masked …]` placeholders mean
 // and how to recover content. Module-level const — bytes MUST be
-// deterministic turn-over-turn so chained `before_agent_start`
-// systemPrompt contributions keep the cache prefix stable. Any future
-// edit here is a deliberate cache bust and MUST be ADR'd.
-const CM_EXPLAINER = `
-
-condensed-milk: tool results older than the current cutoff appear as
+// deterministic turn-over-turn so the `condensed_milk` prompt section
+// keeps the cache prefix stable. Any future edit here is a deliberate
+// cache bust and MUST be ADR'd.
+const CM_EXPLAINER = `condensed-milk: tool results older than the current cutoff appear as
 \`[cm-masked bash|read] …\` to keep the prompt cache stable. Re-run the
 command or re-read the file to get current content. \`/compress-stats\`
 for details.`;
@@ -302,13 +300,13 @@ interface TurnCacheData {
 }
 
 export default function tokenCompressor(pi: ExtensionAPI) {
-  // v1.9.0 (ADR-029): append CM_EXPLAINER to every turn's system prompt.
-  // Chained by pi across extensions (per BeforeAgentStartEventResult docs)
-  // — safe to compose with other extensions contributing systemPrompt.
+  // v1.9.0 (ADR-029): add CM_EXPLAINER to every turn's system prompt.
+  // Use a named section: returning `systemPrompt` forces Pi's whole prompt
+  // and hides sections added later in the run, such as `mcp_servers`.
   // Constant string → byte-identical turn-over-turn → cache-stable.
-  pi.on("before_agent_start", (event) => ({
-    systemPrompt: event.systemPrompt + CM_EXPLAINER,
-  }));
+  pi.on("before_agent_start", (event) => {
+    event.systemPromptOptions.sections.condensed_milk = CM_EXPLAINER;
+  });
 
   // Subagents: compress too — they benefit from smaller output
   let totalOriginal = 0;
